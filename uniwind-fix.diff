@@ -1,0 +1,106 @@
+diff --git a/src/core/native/store.ts b/src/core/native/store.ts
+index afb5f4a..b80943f 100644
+--- a/src/core/native/store.ts
++++ b/src/core/native/store.ts
+@@ -26,6 +26,8 @@ class UniwindStoreBuilder {
+     vars = {} as Record<ThemeName, Vars>
+     private stylesheet = {} as StyleSheets
+     private cache = {} as Record<ThemeName, Map<string, StylesResult>>
++    // data-* attribute names each class string can depend on, so its result can be cached per attribute value
++    private dataAttributeNames = new Map<string, Array<string>>()
+ 
+     getStyles(
+         className: string | undefined,
+@@ -38,7 +40,7 @@ class UniwindStoreBuilder {
+         }
+ 
+         const isScopedTheme = uniwindContext.scopedTheme !== null
+-        const cacheKey = `${className}${state?.isDisabled ?? false}${state?.isFocused ?? false}${state?.isPressed ?? false}${isScopedTheme}${
++        const baseCacheKey = `${className}${state?.isDisabled ?? false}${state?.isFocused ?? false}${state?.isPressed ?? false}${isScopedTheme}${
+             uniwindContext.rtl ?? ''
+         }${uniwindContext.variables?.__uniwindVariablesCacheKey ?? ''}`
+         const cache = this.cache[uniwindContext.scopedTheme ?? this.runtime.currentThemeName]
+@@ -47,22 +49,30 @@ class UniwindStoreBuilder {
+             return emptyState
+         }
+ 
+-        if (cache.has(cacheKey)) {
+-            return cache.get(cacheKey)!
++        const knownDataAttributeNames = this.dataAttributeNames.get(className)
++        const cachedKey = knownDataAttributeNames
++            ? baseCacheKey + this.getDataAttributesCacheKey(knownDataAttributeNames, componentProps)
++            : baseCacheKey
++
++        if (cache.has(cachedKey)) {
++            return cache.get(cachedKey)!
+         }
+ 
+         const result = this.resolveStyles(className, componentProps, state, uniwindContext)
++        let cacheKey = baseCacheKey
+ 
+-        // Don't cache styles that depend on data attributes
+-        if (!result.hasDataAttributes) {
+-            cache.set(cacheKey, result)
+-            UniwindListener.subscribe(
+-                () => cache.delete(cacheKey),
+-                result.dependencies,
+-                { once: true },
+-            )
++        if (result.dataAttributeNames.length > 0) {
++            this.dataAttributeNames.set(className, result.dataAttributeNames)
++            cacheKey += this.getDataAttributesCacheKey(result.dataAttributeNames, componentProps)
+         }
+ 
++        cache.set(cacheKey, result)
++        UniwindListener.subscribe(
++            () => cache.delete(cacheKey),
++            result.dependencies,
++            { once: true },
++        )
++
+         return result
+     }
+ 
+@@ -94,6 +104,7 @@ class UniwindStoreBuilder {
+             return [theme, clonedVars]
+         }))
+         this.cache = Object.fromEntries(themes.map(theme => [theme, new Map()]))
++        this.dataAttributeNames.clear()
+ 
+         if (__DEV__) {
+             UniwindListener.notifyAll()
+@@ -118,7 +129,7 @@ class UniwindStoreBuilder {
+                 getScopedVars(uniwindContext.variables),
+             )
+         const originalVars = vars
+-        let hasDataAttributes = false
++        const dataAttributeNames = new Set<string>()
+         const dependencies = new Set<StyleDependency>()
+         let dependencySum = 0
+         const bestBreakpoints = new Map<string, Style>()
+@@ -145,7 +156,7 @@ class UniwindStoreBuilder {
+                 }
+ 
+                 if (style.dataAttributes !== null) {
+-                    hasDataAttributes = true
++                    Object.keys(style.dataAttributes).forEach(name => dataAttributeNames.add(name))
+                 }
+ 
+                 if (
+@@ -244,10 +255,15 @@ class UniwindStoreBuilder {
+             styles: result,
+             dependencies: Array.from(dependencies),
+             dependencySum,
+-            hasDataAttributes,
++            dataAttributeNames: Array.from(dataAttributeNames).sort(),
+         }
+     }
+ 
++    private getDataAttributesCacheKey(names: Array<string>, props: Record<string, any> = {}) {
++        // validateDataAttributes treats true and 'true' (and false and 'false') alike, so String() keeps them on one entry
++        return names.map(name => `\u0000${String(props[name])}`).join('')
++    }
++
+     private validateDataAttributes(dataAttributes: Record<string, string>, props: Record<string, any> = {}) {
+         for (const [attribute, expectedAttributeValue] of Object.entries(dataAttributes)) {
+             const attributeValue = props[attribute]
